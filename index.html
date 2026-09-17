@@ -2,46 +2,27 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>チャリ走 - ブラウザ版</title>
 <style>
-  :root{
-    --bezel:#111611;
-    --lcd-bg:#b7cf9c;
-    --lcd-fg:#28331d;
-  }
-  *{box-sizing:border-box;}
   html,body{
-    margin:0;height:100%;
+    margin:0;padding:0;width:100%;height:100%;
     background:#000;
-    display:flex;align-items:center;justify-content:center;
-    font-family:"Courier New",monospace;
-    overflow-x:hidden;
-  }
-  body{ padding:16px; }
-  #phone{
-    width:100%;max-width:420px;
-    background:linear-gradient(160deg,#2b2f2b,#0c0e0c);
-    padding:18px 14px 22px;
-    border-radius:22px;
-    box-shadow:0 0 0 2px #000, 0 20px 60px rgba(0,0,0,.7), inset 0 0 12px rgba(0,0,0,.6);
-  }
-  #screenWrap{
-    position:relative;
-    width:100%;aspect-ratio:2/3;
-    border-radius:6px;
     overflow:hidden;
-    box-shadow: inset 0 0 14px rgba(0,0,0,.55), 0 0 0 3px #05130a, 0 0 0 6px #1a1f19;
+    touch-action:none;
+    -webkit-user-select:none;user-select:none;
+    -webkit-tap-highlight-color:transparent;
+    font-family:"Courier New",monospace;
   }
   canvas{
     display:block;
-    width:100%;height:100%;
-    background:var(--lcd-bg);
+    width:100vw;height:100vh;
+    background:#b7cf9c;
     touch-action:none;
     cursor:pointer;
   }
   #scanlines{
-    position:absolute;inset:0;
+    position:fixed;inset:0;
     pointer-events:none;
     background:repeating-linear-gradient(
       to bottom,
@@ -53,33 +34,38 @@
     mix-blend-mode:multiply;
   }
   #vignette{
-    position:absolute;inset:0;
+    position:fixed;inset:0;
     pointer-events:none;
-    box-shadow: inset 0 0 60px rgba(0,0,0,.45);
-  }
-  #brand{
-    text-align:center;color:#8a9a86;font-size:11px;letter-spacing:2px;margin-top:10px;
-    user-select:none;
+    box-shadow: inset 0 0 100px rgba(0,0,0,.45);
   }
 </style>
 </head>
 <body>
-  <div id="phone">
-    <div id="screenWrap">
-      <canvas id="game" width="400" height="600"></canvas>
-      <div id="scanlines"></div>
-      <div id="vignette"></div>
-    </div>
-    <div id="brand">CHARISOU KEITAI &middot; K-903</div>
-  </div>
+  <canvas id="game"></canvas>
+  <div id="scanlines"></div>
+  <div id="vignette"></div>
 
 <script>
 (function(){
   "use strict";
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
   const FONT = '"MS Gothic","Courier New",monospace';
+
+  let W = 400, H = 600, dpr = 1, ART_SCALE = 1;
+  function S(px){ return px*ART_SCALE; }
+  function resize(){
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W*dpr);
+    canvas.height = Math.floor(H*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ART_SCALE = clamp(H/600, 0.75, 2.0);
+    PLAYER_X = clamp(W*0.27, 90, 220);
+    GROUND_MIN = H*0.4333;
+    GROUND_MAX = H*0.8333;
+  }
 
   const COLOR = {
     fg:  '#28331d',
@@ -194,12 +180,11 @@
   const JUMP_V1 = -620;
   const JUMP_V2 = -560;
   const JUMP_CUT_MULT = 0.5;
-  const PLAYER_X = 108;
+  let PLAYER_X = 108, GROUND_MIN = 260, GROUND_MAX = 500;
   const PLAYER_W = 20;
   const PLAYER_SCALE = 0.66;
   const CP_SCALE = 0.72;
   const CP_UNLOCK_DIST = 500;
-  const GROUND_MIN = 260, GROUND_MAX = 500;
   const PPM = 18;
   const BASE_SPEED = 190, MAX_SPEED = 480, SPEED_RAMP = 1400;
 
@@ -231,8 +216,9 @@
   function resetGame(){
     state='playing';
     scrollOffset=0; speed=BASE_SPEED; distanceM=0;
-    player = { y:400, vy:0, grounded:true, jumpsUsed:0, angle:0, wheelAngle:0, pedalAngle:0 };
-    terrain = { nodes:[], nextX:0, groundY:400 };
+    const baseY = Math.round(H*0.6667);
+    player = { y:baseY, vy:0, grounded:true, jumpsUsed:0, angle:0, wheelAngle:0, pedalAngle:0 };
+    terrain = { nodes:[], nextX:0, groundY:baseY };
     walls = [];
     generateInitial();
     player.y = getGroundY(scrollOffset+PLAYER_X);
@@ -248,9 +234,9 @@
   function setGapOnLast(){ terrain.nodes[terrain.nodes.length-1].gapAfter=true; }
 
   function generateInitial(){
-    terrain.groundY=400;
-    pushNode(0,400);
-    pushNode(300,400);
+    const baseY = terrain.groundY;
+    pushNode(0,baseY);
+    pushNode(300,baseY);
     ensureGenerated();
   }
 
@@ -392,7 +378,7 @@
   function updateCP(dt){
     if(!cp.unlocked){
       if(distanceM >= CP_UNLOCK_DIST){
-        cp.unlocked=true; cp.active=true; cp.gapPx=260; cp.elapsed=0;
+        cp.unlocked=true; cp.active=true; cp.gapPx=320; cp.elapsed=0;
         Snd.sato();
         pushMessage('背後にCPの気配…！', 2200);
       }
@@ -401,8 +387,8 @@
     if(!cp.active || cp.caught) return;
 
     cp.elapsed += dt;
-    const baseRate = 16 + Math.min(cp.elapsed,50)*1.3;
-    const wobble = Math.sin(cp.elapsed*0.7)*10;
+    const baseRate = 6 + Math.min(cp.elapsed,60)*0.2;
+    const wobble = Math.sin(cp.elapsed*0.7)*6;
     cp.gapPx -= (baseRate+wobble)*dt;
     if(cp.gapPx < 0) cp.gapPx = 0;
     cp.wheelAngle += (speed*dt)/(13*CP_SCALE)*1.25;
@@ -462,7 +448,7 @@
     for(const p of particles){
       ctx.globalAlpha = clamp(p.life,0,1);
       ctx.beginPath();
-      ctx.arc(p.wx-scrollOffset, p.y, 2.4, 0, Math.PI*2);
+      ctx.arc(p.wx-scrollOffset, p.y, S(2.4), 0, Math.PI*2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -475,7 +461,7 @@
     ctx.fillStyle = zone.bg;
     ctx.fillRect(0,0,W,H);
     ctx.strokeStyle = zone.mid; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.arc(340,70,26,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(W-60,70,26,0,Math.PI*2); ctx.stroke();
     ctx.fillStyle = zone.bg2;
     const par = scrollOffset*0.3;
     ctx.beginPath();
@@ -530,7 +516,7 @@
     ctx.moveTo(hx,hy); ctx.lineTo(mx,my); ctx.lineTo(kx,ky);
     ctx.stroke();
   }
-  const WHEEL_R = 9.5;
+  const WHEEL_R = 7.5;
   function drawBikeRider(x,y,angle,wheelAngle,pedalAngle,color,scale){
     scale = scale||1;
     ctx.save();
@@ -556,7 +542,7 @@
   }
 
   function drawPlayer(){
-    drawBikeRider(PLAYER_X, player.y, player.angle, player.wheelAngle, player.pedalAngle, COLOR.fg, PLAYER_SCALE);
+    drawBikeRider(PLAYER_X, player.y, player.angle, player.wheelAngle, player.pedalAngle, COLOR.fg, PLAYER_SCALE*ART_SCALE);
   }
   function drawCP(){
     const screenX = PLAYER_X - cp.gapPx;
@@ -572,29 +558,30 @@
       ctx.stroke();
     }
     ctx.restore();
-    drawBikeRider(screenX, gy, 0, cp.wheelAngle, cp.pedalAngle, COLOR.red, CP_SCALE);
+    drawBikeRider(screenX, gy, 0, cp.wheelAngle, cp.pedalAngle, COLOR.red, CP_SCALE*ART_SCALE);
   }
 
   function drawHUD(zone){
+    const barH = S(40);
     ctx.fillStyle = rgbToRgba(zone.mid, 0.55);
-    ctx.fillRect(0,0,W,40);
+    ctx.fillRect(0,0,W,barH);
     ctx.fillStyle = COLOR.fg;
     ctx.textAlign='right';
-    ctx.font = `bold 16px ${FONT}`;
-    ctx.fillText(Math.floor(distanceM)+'m', W-10, 20);
-    ctx.font = `10px ${FONT}`;
+    ctx.font = `bold ${S(16)}px ${FONT}`;
+    ctx.fillText(Math.floor(distanceM)+'m', W-S(10), S(20));
+    ctx.font = `${S(10)}px ${FONT}`;
     const best = Math.max(result.best, Number(localStorage.getItem('charisou_highscore')||0));
-    ctx.fillText('BEST '+best+'m', W-10, 34);
+    ctx.fillText('BEST '+best+'m', W-S(10), S(34));
     if(messages.current){
       ctx.textAlign='left';
-      ctx.font = `13px ${FONT}`;
-      ctx.fillText(messages.current.text, 10, 24);
+      ctx.font = `${S(13)}px ${FONT}`;
+      ctx.fillText(messages.current.text, S(10), S(24));
     }
     if(cp.active && !cp.caught){
       ctx.textAlign='left';
       ctx.fillStyle = COLOR.red;
-      ctx.font = `bold 11px ${FONT}`;
-      ctx.fillText('CPまで '+Math.max(0,Math.round(cp.gapPx/PPM))+'m', 10, 38);
+      ctx.font = `bold ${S(11)}px ${FONT}`;
+      ctx.fillText('CPまで '+Math.max(0,Math.round(cp.gapPx/PPM))+'m', S(10), S(38));
     }
   }
 
@@ -603,27 +590,27 @@
     ctx.fillRect(0,0,W,H);
     ctx.textAlign='center';
     ctx.fillStyle = COLOR.fg;
-    ctx.font = `bold 30px ${FONT}`;
-    ctx.fillText('GAME OVER', W/2, H/2-70);
-    ctx.font = `18px ${FONT}`;
-    ctx.fillText('走行距離: '+result.finalDist+'m', W/2, H/2-24);
-    ctx.fillText('ハイスコア: '+result.best+'m', W/2, H/2+6);
-    ctx.font = `13px ${FONT}`;
+    ctx.font = `bold ${S(30)}px ${FONT}`;
+    ctx.fillText('GAME OVER', W/2, H/2-S(70));
+    ctx.font = `${S(18)}px ${FONT}`;
+    ctx.fillText('走行距離: '+result.finalDist+'m', W/2, H/2-S(24));
+    ctx.fillText('ハイスコア: '+result.best+'m', W/2, H/2+S(6));
+    ctx.font = `${S(13)}px ${FONT}`;
     const reasonText = result.reason==='cp' ? 'CPに追い抜かれた…！'
                       : result.reason==='wall' ? '段差に激突した…！'
                       : '穴に落ちた…！';
     ctx.fillStyle = COLOR.red;
-    ctx.fillText(reasonText, W/2, H/2-46);
+    ctx.fillText(reasonText, W/2, H/2-S(46));
     ctx.fillStyle = COLOR.fg;
     if(result.newRecord){
       ctx.fillStyle = COLOR.red;
-      ctx.font = `bold 14px ${FONT}`;
-      ctx.fillText('★ NEW RECORD ★', W/2, H/2+30);
+      ctx.font = `bold ${S(14)}px ${FONT}`;
+      ctx.fillText('★ NEW RECORD ★', W/2, H/2+S(30));
       ctx.fillStyle = COLOR.fg;
     }
     if(Math.floor(Date.now()/500)%2===0){
-      ctx.font = `13px ${FONT}`;
-      ctx.fillText('スペース / クリック / タップでリトライ', W/2, H/2+70);
+      ctx.font = `${S(13)}px ${FONT}`;
+      ctx.fillText('スペース / クリック / タップでリトライ', W/2, H/2+S(70));
     }
     ctx.textAlign='left';
   }
@@ -664,6 +651,8 @@
     requestAnimationFrame(frame);
   }
 
+  window.addEventListener('resize', resize);
+  resize();
   resetGame();
   requestAnimationFrame(frame);
 })();

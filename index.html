@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>チャリ走 - ブラウザ版</title>
+<style>
+  :root{
+    --bezel:#111611;
+    --lcd-bg:#b7cf9c;
+    --lcd-fg:#28331d;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;height:100%;
+    background:#000;
+    display:flex;align-items:center;justify-content:center;
+    font-family:"Courier New",monospace;
+    overflow-x:hidden;
+  }
+  body{ padding:16px; }
+  #phone{
+    width:100%;max-width:420px;
+    background:linear-gradient(160deg,#2b2f2b,#0c0e0c);
+    padding:18px 14px 22px;
+    border-radius:22px;
+    box-shadow:0 0 0 2px #000, 0 20px 60px rgba(0,0,0,.7), inset 0 0 12px rgba(0,0,0,.6);
+  }
+  #screenWrap{
+    position:relative;
+    width:100%;aspect-ratio:2/3;
+    border-radius:6px;
+    overflow:hidden;
+    box-shadow: inset 0 0 14px rgba(0,0,0,.55), 0 0 0 3px #05130a, 0 0 0 6px #1a1f19;
+  }
+  canvas{
+    display:block;
+    width:100%;height:100%;
+    background:var(--lcd-bg);
+    touch-action:none;
+    cursor:pointer;
+  }
+  #scanlines{
+    position:absolute;inset:0;
+    pointer-events:none;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0.10) 0px,
+      rgba(0,0,0,0.10) 1px,
+      rgba(0,0,0,0) 2px,
+      rgba(0,0,0,0) 3px
+    );
+    mix-blend-mode:multiply;
+  }
+  #vignette{
+    position:absolute;inset:0;
+    pointer-events:none;
+    box-shadow: inset 0 0 60px rgba(0,0,0,.45);
+  }
+  #brand{
+    text-align:center;color:#8a9a86;font-size:11px;letter-spacing:2px;margin-top:10px;
+    user-select:none;
+  }
+</style>
+</head>
+<body>
+  <div id="phone">
+    <div id="screenWrap">
+      <canvas id="game" width="400" height="600"></canvas>
+      <div id="scanlines"></div>
+      <div id="vignette"></div>
+    </div>
+    <div id="brand">CHARISOU KEITAI &middot; K-903</div>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const FONT = '"MS Gothic","Courier New",monospace';
+
+  const COLOR = {
+    fg:  '#28331d',
+    red: '#7a2d1d'
+  };
+
+  const ZONES = [
+    {bg:'#b7cf9c',bg2:'#a3c088',mid:'#6f8756'},
+    {bg:'#e3b980',bg2:'#d1a066',mid:'#9c7345'},
+    {bg:'#b9a8d1',bg2:'#a591c2',mid:'#71618f'},
+    {bg:'#8fa0c2',bg2:'#7a8cb0',mid:'#4f5f80'},
+    {bg:'#e8b8c4',bg2:'#d9a0af',mid:'#a66473'},
+    {bg:'#dbc98f',bg2:'#cbb571',mid:'#95814a'}
+  ];
+
+  function clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
+  function rand(a,b){ return a + Math.random()*(b-a); }
+  function hexToRgb(hex){
+    const n = parseInt(hex.slice(1),16);
+    return [(n>>16)&255,(n>>8)&255,n&255];
+  }
+  function lerpHex(a,b,t){
+    const ca=hexToRgb(a), cb=hexToRgb(b);
+    const r=Math.round(ca[0]+(cb[0]-ca[0])*t);
+    const g=Math.round(ca[1]+(cb[1]-ca[1])*t);
+    const bl=Math.round(ca[2]+(cb[2]-ca[2])*t);
+    return 'rgb('+r+','+g+','+bl+')';
+  }
+  function getZoneColors(){
+    const seg = distanceM/500;
+    const n = ZONES.length;
+    const i0 = Math.floor(seg)%n;
+    const i1 = (i0+1)%n;
+    const t = seg-Math.floor(seg);
+    return {
+      bg: lerpHex(ZONES[i0].bg, ZONES[i1].bg, t),
+      bg2: lerpHex(ZONES[i0].bg2, ZONES[i1].bg2, t),
+      mid: lerpHex(ZONES[i0].mid, ZONES[i1].mid, t)
+    };
+  }
+  function rgbToRgba(rgbStr, alpha){
+    return rgbStr.replace('rgb(','rgba(').replace(')', ','+alpha+')');
+  }
+
+  // ---------------------------------------------------------------
+  // Audio (WebAudio beep synthesis - no external files)
+  // ---------------------------------------------------------------
+  const Snd = {
+    ctx:null,
+    ensure(){
+      if(!this.ctx){
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if(AC) this.ctx = new AC();
+      }
+      if(this.ctx && this.ctx.state==='suspended') this.ctx.resume();
+    },
+    beep(freq,dur,type,vol,slideTo){
+      if(!this.ctx) return;
+      try{
+        const t0=this.ctx.currentTime;
+        const osc=this.ctx.createOscillator();
+        const gain=this.ctx.createGain();
+        osc.type=type||'square';
+        osc.frequency.setValueAtTime(freq,t0);
+        if(slideTo) osc.frequency.linearRampToValueAtTime(slideTo,t0+dur);
+        gain.gain.setValueAtTime(vol!=null?vol:0.08,t0);
+        gain.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+        osc.connect(gain).connect(this.ctx.destination);
+        osc.start(t0);
+        osc.stop(t0+dur+0.02);
+      }catch(e){}
+    },
+    jump(combo){ this.beep(combo?520:420,0.11,'square',0.09,combo?800:640); },
+    land(){ this.beep(220,0.05,'square',0.04,150); },
+    tick(){ this.beep(160,0.02,'square',0.02); },
+    crash(){ this.beep(150,0.35,'sawtooth',0.14,40); setTimeout(()=>this.beep(90,0.28,'square',0.1,28),70); },
+    sato(){ this.beep(320,0.5,'sawtooth',0.09,900); },
+    milestone(){ this.beep(700,0.07,'square',0.05,940); }
+  };
+
+  // ---------------------------------------------------------------
+  // Input
+  // ---------------------------------------------------------------
+  const input = { holding:false };
+  function onDown(e){
+    if(e.type==='keydown'){
+      if(e.code!=='Space' && e.code!=='Enter') return;
+      if(e.repeat) return;
+    }
+    e.preventDefault();
+    Snd.ensure();
+    if(input.holding) return;
+    input.holding=true;
+    handleJumpPress();
+  }
+  function onUp(e){
+    if(e.type==='keyup' && e.code!=='Space' && e.code!=='Enter') return;
+    input.holding=false;
+    handleJumpRelease();
+  }
+  window.addEventListener('keydown',onDown);
+  window.addEventListener('keyup',onUp);
+  canvas.addEventListener('pointerdown',onDown);
+  window.addEventListener('pointerup',onUp);
+  canvas.addEventListener('contextmenu',e=>e.preventDefault());
+
+  // ---------------------------------------------------------------
+  // Constants
+  // ---------------------------------------------------------------
+  const GRAVITY = 2200;
+  const HOLD_GRAVITY_MULT = 0.45;
+  const JUMP_V1 = -620;
+  const JUMP_V2 = -560;
+  const JUMP_CUT_MULT = 0.5;
+  const PLAYER_X = 108;
+  const PLAYER_W = 20;
+  const PLAYER_SCALE = 0.66;
+  const CP_SCALE = 0.72;
+  const CP_UNLOCK_DIST = 500;
+  const GROUND_MIN = 260, GROUND_MAX = 500;
+  const PPM = 18;
+  const BASE_SPEED = 190, MAX_SPEED = 480, SPEED_RAMP = 1400;
+
+  const MILESTONES = [
+    {d:30,  t:'スタートダッシュ！'},
+    {d:80,  t:'空は晴れ渡っています'},
+    {d:150, t:'風が強くなってきました'},
+    {d:260, t:'足がじんわり熱くなってきた'},
+    {d:400, t:'まだまだこれから'},
+    {d:600, t:'もう限界かもしれません'},
+    {d:900, t:'伝説になりつつある…'},
+    {d:1300,t:'誰もついてこれません'}
+  ];
+  const FLAVORS = [
+    'もう限界です','足がもげそうです','前がよく見えません',
+    'この坂、終わらないのでは','誰か助けてください','ゴールは…ないらしい',
+    '自転車が悲鳴を上げています','そろそろ引き返したい',
+    '呼吸が荒くなってきました','景色が変わらない気がします',
+    '家に帰りたい','明日筋肉痛決定です','空腹で目が回ります'
+  ];
+
+  // ---------------------------------------------------------------
+  // Game state
+  // ---------------------------------------------------------------
+  let state, scrollOffset, speed, distanceM;
+  let player, terrain, walls, cp, messages, particles;
+  let result = { finalDist:0, best:0, newRecord:false, reason:'course' };
+
+  function resetGame(){
+    state='playing';
+    scrollOffset=0; speed=BASE_SPEED; distanceM=0;
+    player = { y:400, vy:0, grounded:true, jumpsUsed:0, angle:0, wheelAngle:0, pedalAngle:0 };
+    terrain = { nodes:[], nextX:0, groundY:400 };
+    walls = [];
+    generateInitial();
+    player.y = getGroundY(scrollOffset+PLAYER_X);
+    cp = { unlocked:false, active:false, gapPx:0, elapsed:0, wheelAngle:0, pedalAngle:0, warned120:false, warned50:false, caught:false };
+    messages = { current:null, timer:0, queue:[{text:'スペース/クリック/タップでジャンプ！',duration:2600}], milestoneIdx:0, nextRandomDist: 140+rand(0,60) };
+    particles = [];
+  }
+
+  // ---------------------------------------------------------------
+  // Terrain generation
+  // ---------------------------------------------------------------
+  function pushNode(x,y){ terrain.nodes.push({x,y,gapAfter:false}); terrain.nextX=x; }
+  function setGapOnLast(){ terrain.nodes[terrain.nodes.length-1].gapAfter=true; }
+
+  function generateInitial(){
+    terrain.groundY=400;
+    pushNode(0,400);
+    pushNode(300,400);
+    ensureGenerated();
+  }
+
+  function chooseFeature(){
+    if(terrain.nextX < 480) return Math.random()<0.7 ? 'flat' : 'slope';
+    const d = clamp(distanceM/500,0,1);
+    const w = { flat: Math.max(30-13*d,12), slope:30, hole:8+16*d, wall:7+17*d };
+    const total = w.flat+w.slope+w.hole+w.wall;
+    let r = Math.random()*total;
+    if((r-=w.flat)<0) return 'flat';
+    if((r-=w.slope)<0) return 'slope';
+    if((r-=w.hole)<0) return 'hole';
+    return 'wall';
+  }
+
+  function generateFeature(){
+    const d = clamp(distanceM/500,0,1);
+    const type = chooseFeature();
+    if(type==='flat'){
+      const len = rand(70,150);
+      pushNode(terrain.nextX+len, terrain.groundY);
+    } else if(type==='slope'){
+      const len = rand(70,170);
+      const delta = (Math.random()*2-1)*(60+70*d);
+      const newY = clamp(terrain.groundY+delta, GROUND_MIN, GROUND_MAX);
+      pushNode(terrain.nextX+len, newY);
+      terrain.groundY = newY;
+    } else if(type==='hole'){
+      let width = Math.min(rand(55,90)+d*70, 170);
+      setGapOnLast();
+      pushNode(terrain.nextX+width, terrain.groundY);
+    } else { // wall
+      const rise = Math.min(28+Math.random()*30+d*30, 95);
+      const faceLen = rand(8,16);
+      const bottomY = terrain.groundY;
+      const topY = clamp(bottomY-rise, GROUND_MIN, GROUND_MAX);
+      const x0 = terrain.nextX;
+      pushNode(x0+faceLen, topY);
+      walls.push({x0, x1:terrain.nextX, topY, bottomY});
+      terrain.groundY = topY;
+    }
+  }
+
+  function ensureGenerated(){
+    let guard=0;
+    while(terrain.nextX < scrollOffset + W + 500 && guard<200){ generateFeature(); guard++; }
+  }
+  function pruneTerrain(){
+    while(terrain.nodes.length>2 && terrain.nodes[1].x < scrollOffset-80) terrain.nodes.shift();
+    while(walls.length && walls[0].x1 < scrollOffset-80) walls.shift();
+  }
+  function getGroundY(worldX){
+    const nodes = terrain.nodes;
+    for(let i=0;i<nodes.length-1;i++){
+      if(worldX>=nodes[i].x && worldX<=nodes[i+1].x){
+        if(nodes[i].gapAfter) return null;
+        const t=(worldX-nodes[i].x)/(nodes[i+1].x-nodes[i].x);
+        return nodes[i].y + (nodes[i+1].y-nodes[i].y)*t;
+      }
+    }
+    return nodes.length ? nodes[nodes.length-1].y : 400;
+  }
+
+  // ---------------------------------------------------------------
+  // Player
+  // ---------------------------------------------------------------
+  function handleJumpPress(){
+    if(state==='gameover'){ resetGame(); return; }
+    if(state!=='playing') return;
+    if(player.jumpsUsed<2){
+      player.vy = player.jumpsUsed===0 ? JUMP_V1 : JUMP_V2;
+      player.jumpsUsed++;
+      player.grounded=false;
+      Snd.jump(player.jumpsUsed===2);
+      spawnParticles(scrollOffset+PLAYER_X, player.y, 6);
+    }
+  }
+  function handleJumpRelease(){
+    if(player.vy < JUMP_V1*JUMP_CUT_MULT){
+      player.vy *= JUMP_CUT_MULT;
+    }
+  }
+
+  function triggerCrash(reason){
+    if(state!=='playing') return;
+    state='gameover';
+    player.crashed=true;
+    Snd.crash();
+    result.reason = reason || 'course';
+    const best = Number(localStorage.getItem('charisou_highscore')||0);
+    const finalDist = Math.floor(distanceM);
+    result.finalDist = finalDist;
+    result.newRecord = finalDist > best;
+    result.best = result.newRecord ? finalDist : best;
+    if(result.newRecord) localStorage.setItem('charisou_highscore', String(finalDist));
+  }
+
+  function updatePlayer(dt){
+    const worldX = scrollOffset+PLAYER_X;
+    let g = GRAVITY;
+    if(player.vy<0 && input.holding) g *= HOLD_GRAVITY_MULT;
+    player.vy += g*dt;
+    player.y += player.vy*dt;
+
+    const gY = getGroundY(worldX);
+    if(gY!==null && player.y>=gY && player.vy>=0){
+      if(!player.grounded) Snd.land();
+      player.y = gY; player.vy=0; player.grounded=true; player.jumpsUsed=0;
+    } else {
+      player.grounded=false;
+    }
+
+    for(let i=0;i<walls.length;i++){
+      const w = walls[i];
+      if(worldX+PLAYER_W/2 >= w.x0 && worldX-PLAYER_W/2 <= w.x1){
+        if(player.y > w.topY + 6){ triggerCrash('wall'); break; }
+      }
+    }
+    if(player.y > H+40) triggerCrash('hole');
+
+    const gA = getGroundY(worldX-14), gB = getGroundY(worldX+14);
+    if(gA!==null && gB!==null && player.grounded){
+      player.angle = Math.atan2(gB-gA, 28)*0.6;
+    } else {
+      player.angle *= 0.9;
+    }
+
+    if(player.grounded){
+      player.wheelAngle += (speed*dt)/14;
+      player.pedalAngle = player.wheelAngle*1.4;
+    } else {
+      player.wheelAngle += (speed*dt)/14*0.5;
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // CP (rival that chases from behind after 500m)
+  // ---------------------------------------------------------------
+  function updateCP(dt){
+    if(!cp.unlocked){
+      if(distanceM >= CP_UNLOCK_DIST){
+        cp.unlocked=true; cp.active=true; cp.gapPx=260; cp.elapsed=0;
+        Snd.sato();
+        pushMessage('背後にCPの気配…！', 2200);
+      }
+      return;
+    }
+    if(!cp.active || cp.caught) return;
+
+    cp.elapsed += dt;
+    const baseRate = 16 + Math.min(cp.elapsed,50)*1.3;
+    const wobble = Math.sin(cp.elapsed*0.7)*10;
+    cp.gapPx -= (baseRate+wobble)*dt;
+    if(cp.gapPx < 0) cp.gapPx = 0;
+    cp.wheelAngle += (speed*dt)/(13*CP_SCALE)*1.25;
+    cp.pedalAngle = cp.wheelAngle*1.4;
+
+    if(!cp.warned120 && cp.gapPx<120){ cp.warned120=true; pushMessage('CPが背後に迫っている！', 1800); }
+    if(!cp.warned50 && cp.gapPx<50){ cp.warned50=true; pushMessage('CPのブレスが聞こえる…！', 1500); }
+
+    if(cp.gapPx<=0 && !cp.caught){
+      cp.caught=true;
+      triggerCrash('cp');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Messages
+  // ---------------------------------------------------------------
+  function pushMessage(text,duration){ messages.queue.push({text,duration}); }
+  function updateMessages(dt){
+    if(messages.current){
+      messages.timer -= dt*1000;
+      if(messages.timer<=0) messages.current=null;
+    }
+    if(!messages.current && messages.queue.length){
+      messages.current = messages.queue.shift();
+      messages.timer = messages.current.duration;
+      Snd.milestone();
+    }
+    while(messages.milestoneIdx<MILESTONES.length && distanceM>=MILESTONES[messages.milestoneIdx].d){
+      pushMessage(MILESTONES[messages.milestoneIdx].t, 2200);
+      messages.milestoneIdx++;
+    }
+    if(distanceM > messages.nextRandomDist){
+      pushMessage(FLAVORS[Math.floor(Math.random()*FLAVORS.length)], 2000);
+      messages.nextRandomDist = distanceM + 130+Math.random()*160;
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Particles
+  // ---------------------------------------------------------------
+  function spawnParticles(wx,y,n){
+    for(let i=0;i<n;i++){
+      particles.push({ wx, y, vx:rand(-60,60), vy:rand(-140,-40), life:1 });
+    }
+  }
+  function updateParticles(dt){
+    for(let i=particles.length-1;i>=0;i--){
+      const p=particles[i];
+      p.wx += p.vx*dt; p.y += p.vy*dt; p.vy += 900*dt;
+      p.life -= dt*1.6;
+      if(p.life<=0) particles.splice(i,1);
+    }
+  }
+  function drawParticles(){
+    ctx.fillStyle = COLOR.fg;
+    for(const p of particles){
+      ctx.globalAlpha = clamp(p.life,0,1);
+      ctx.beginPath();
+      ctx.arc(p.wx-scrollOffset, p.y, 2.4, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------
+  function drawBackground(zone){
+    ctx.fillStyle = zone.bg;
+    ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle = zone.mid; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(340,70,26,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle = zone.bg2;
+    const par = scrollOffset*0.3;
+    ctx.beginPath();
+    ctx.moveTo(0,260);
+    for(let x=0;x<=W;x+=20){
+      const wx=x+par;
+      const y = 200 - Math.sin(wx*0.008)*26 - Math.sin(wx*0.021+1.3)*14;
+      ctx.lineTo(x,y);
+    }
+    ctx.lineTo(W,260); ctx.closePath(); ctx.fill();
+  }
+
+  function drawRun(run){
+    if(run.length<1) return;
+    const x0 = run[0].x-scrollOffset;
+    ctx.fillStyle = COLOR.fg;
+    ctx.beginPath();
+    ctx.moveTo(x0,H+5);
+    ctx.lineTo(x0,run[0].y);
+    for(let i=1;i<run.length;i++) ctx.lineTo(run[i].x-scrollOffset, run[i].y);
+    const xl = run[run.length-1].x-scrollOffset;
+    ctx.lineTo(xl,H+5);
+    ctx.closePath();
+    ctx.fill();
+  }
+  function drawTerrain(){
+    let run=[];
+    const nodes = terrain.nodes;
+    for(let i=0;i<nodes.length;i++){
+      run.push(nodes[i]);
+      if(nodes[i].gapAfter || i===nodes.length-1){
+        drawRun(run);
+        run=[];
+      }
+    }
+  }
+
+  function drawWheel(cx,cy,r,angle){
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.lineWidth=2.5; ctx.stroke();
+    for(let k=0;k<3;k++){
+      const a = angle + k*(Math.PI*2/3);
+      ctx.beginPath();
+      ctx.moveTo(cx,cy);
+      ctx.lineTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+      ctx.stroke();
+    }
+  }
+  function drawLeg(hx,hy,cx,cy,r,angle){
+    const kx = cx+Math.cos(angle)*r, ky = cy+Math.sin(angle)*r;
+    const mx = (hx+kx)/2, my = (hy+ky)/2 - 4;
+    ctx.beginPath();
+    ctx.moveTo(hx,hy); ctx.lineTo(mx,my); ctx.lineTo(kx,ky);
+    ctx.stroke();
+  }
+  const WHEEL_R = 9.5;
+  function drawBikeRider(x,y,angle,wheelAngle,pedalAngle,color,scale){
+    scale = scale||1;
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.rotate(angle);
+    ctx.scale(scale,scale);
+    ctx.strokeStyle = color; ctx.fillStyle = color;
+    ctx.lineWidth = 3; ctx.lineCap='round'; ctx.lineJoin='round';
+    drawWheel(-13,-WHEEL_R,WHEEL_R,wheelAngle);
+    drawWheel(13,-WHEEL_R,WHEEL_R,wheelAngle);
+    ctx.beginPath();
+    ctx.moveTo(-13,-WHEEL_R); ctx.lineTo(-4,-30); ctx.lineTo(2,-13); ctx.lineTo(13,-WHEEL_R);
+    ctx.moveTo(-4,-30); ctx.lineTo(16,-26); ctx.lineTo(13,-WHEEL_R);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(-2,-42,6,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-2,-36); ctx.lineTo(-4,-30);
+    ctx.moveTo(0,-38); ctx.lineTo(16,-26);
+    ctx.stroke();
+    drawLeg(-4,-30, 2,-13,7, pedalAngle);
+    drawLeg(-4,-30, 2,-13,7, pedalAngle+Math.PI);
+    ctx.restore();
+  }
+
+  function drawPlayer(){
+    drawBikeRider(PLAYER_X, player.y, player.angle, player.wheelAngle, player.pedalAngle, COLOR.fg, PLAYER_SCALE);
+  }
+  function drawCP(){
+    const screenX = PLAYER_X - cp.gapPx;
+    const wx = scrollOffset+screenX;
+    let gy = getGroundY(wx);
+    if(gy===null) gy = terrain.groundY;
+    ctx.save();
+    ctx.strokeStyle = COLOR.red; ctx.lineWidth=1.5;
+    for(let i=0;i<3;i++){
+      ctx.beginPath();
+      ctx.moveTo(screenX-24-i*8, gy-20+i*7);
+      ctx.lineTo(screenX-12-i*8, gy-20+i*7);
+      ctx.stroke();
+    }
+    ctx.restore();
+    drawBikeRider(screenX, gy, 0, cp.wheelAngle, cp.pedalAngle, COLOR.red, CP_SCALE);
+  }
+
+  function drawHUD(zone){
+    ctx.fillStyle = rgbToRgba(zone.mid, 0.55);
+    ctx.fillRect(0,0,W,40);
+    ctx.fillStyle = COLOR.fg;
+    ctx.textAlign='right';
+    ctx.font = `bold 16px ${FONT}`;
+    ctx.fillText(Math.floor(distanceM)+'m', W-10, 20);
+    ctx.font = `10px ${FONT}`;
+    const best = Math.max(result.best, Number(localStorage.getItem('charisou_highscore')||0));
+    ctx.fillText('BEST '+best+'m', W-10, 34);
+    if(messages.current){
+      ctx.textAlign='left';
+      ctx.font = `13px ${FONT}`;
+      ctx.fillText(messages.current.text, 10, 24);
+    }
+    if(cp.active && !cp.caught){
+      ctx.textAlign='left';
+      ctx.fillStyle = COLOR.red;
+      ctx.font = `bold 11px ${FONT}`;
+      ctx.fillText('CPまで '+Math.max(0,Math.round(cp.gapPx/PPM))+'m', 10, 38);
+    }
+  }
+
+  function drawGameOver(){
+    ctx.fillStyle = 'rgba(20,26,15,0.62)';
+    ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.fillStyle = COLOR.fg;
+    ctx.font = `bold 30px ${FONT}`;
+    ctx.fillText('GAME OVER', W/2, H/2-70);
+    ctx.font = `18px ${FONT}`;
+    ctx.fillText('走行距離: '+result.finalDist+'m', W/2, H/2-24);
+    ctx.fillText('ハイスコア: '+result.best+'m', W/2, H/2+6);
+    ctx.font = `13px ${FONT}`;
+    const reasonText = result.reason==='cp' ? 'CPに追い抜かれた…！'
+                      : result.reason==='wall' ? '段差に激突した…！'
+                      : '穴に落ちた…！';
+    ctx.fillStyle = COLOR.red;
+    ctx.fillText(reasonText, W/2, H/2-46);
+    ctx.fillStyle = COLOR.fg;
+    if(result.newRecord){
+      ctx.fillStyle = COLOR.red;
+      ctx.font = `bold 14px ${FONT}`;
+      ctx.fillText('★ NEW RECORD ★', W/2, H/2+30);
+      ctx.fillStyle = COLOR.fg;
+    }
+    if(Math.floor(Date.now()/500)%2===0){
+      ctx.font = `13px ${FONT}`;
+      ctx.fillText('スペース / クリック / タップでリトライ', W/2, H/2+70);
+    }
+    ctx.textAlign='left';
+  }
+
+  function render(){
+    ctx.clearRect(0,0,W,H);
+    const zone = getZoneColors();
+    drawBackground(zone);
+    drawTerrain();
+    if(cp.unlocked && !cp.caught) drawCP();
+    drawParticles();
+    drawPlayer();
+    drawHUD(zone);
+    if(state==='gameover') drawGameOver();
+  }
+
+  // ---------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------
+  let lastTs=null;
+  function frame(ts){
+    if(lastTs===null) lastTs=ts;
+    let dt=(ts-lastTs)/1000; lastTs=ts;
+    dt=Math.min(dt,0.05);
+
+    if(state==='playing'){
+      speed = BASE_SPEED + Math.min(distanceM,SPEED_RAMP)/SPEED_RAMP*(MAX_SPEED-BASE_SPEED);
+      scrollOffset += speed*dt;
+      distanceM = scrollOffset/PPM;
+      ensureGenerated();
+      pruneTerrain();
+      updatePlayer(dt);
+      updateCP(dt);
+      updateMessages(dt);
+      updateParticles(dt);
+    }
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  resetGame();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

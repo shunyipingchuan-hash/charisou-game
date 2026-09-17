@@ -186,7 +186,7 @@
   const CP_SCALE = 0.72;
   const CP_UNLOCK_DIST = 500;
   const PPM = 18;
-  const BASE_SPEED = 190, MAX_SPEED = 480, SPEED_RAMP = 1400;
+  const BASE_SPEED = 135, MAX_SPEED = 480, SPEED_RAMP = 1500;
 
   const MILESTONES = [
     {d:30,  t:'スタートダッシュ！'},
@@ -304,6 +304,7 @@
   // Player
   // ---------------------------------------------------------------
   function handleJumpPress(){
+    if(state==='title'){ resetGame(); return; }
     if(state==='gameover'){ resetGame(); return; }
     if(state!=='playing') return;
     if(player.jumpsUsed<2){
@@ -615,6 +616,24 @@
     ctx.textAlign='left';
   }
 
+  function drawTitle(){
+    ctx.fillStyle = 'rgba(20,26,15,0.32)';
+    ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center';
+    ctx.fillStyle = COLOR.fg;
+    ctx.font = `bold ${S(56)}px ${FONT}`;
+    ctx.fillText('チャリ走', W/2, H/2-S(6));
+    if(Math.floor(Date.now()/500)%2===0){
+      ctx.font = `${S(15)}px ${FONT}`;
+      ctx.fillText('スペース / クリック / タップでスタート', W/2, H/2+S(42));
+    }
+    ctx.font = `${S(11)}px ${FONT}`;
+    ctx.globalAlpha = 0.75;
+    ctx.fillText('二段ジャンプで穴と壁を越えろ！CPに追いつかれるな', W/2, H/2+S(68));
+    ctx.globalAlpha = 1;
+    ctx.textAlign='left';
+  }
+
   function render(){
     ctx.clearRect(0,0,W,H);
     const zone = getZoneColors();
@@ -623,8 +642,9 @@
     if(cp.unlocked && !cp.caught) drawCP();
     drawParticles();
     drawPlayer();
-    drawHUD(zone);
+    if(state!=='title') drawHUD(zone);
     if(state==='gameover') drawGameOver();
+    if(state==='title') drawTitle();
   }
 
   // ---------------------------------------------------------------
@@ -654,6 +674,7 @@
   window.addEventListener('resize', resize);
   resize();
   resetGame();
+  state='title';
   requestAnimationFrame(frame);
 })();
 </script>
